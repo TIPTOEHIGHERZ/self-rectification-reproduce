@@ -2,14 +2,14 @@ import torch
 import torch.nn as nn
 from diffusers import StableDiffusionPipeline, AutoencoderKL, UNet2DConditionModel, DDIMScheduler, DiffusionPipeline
 import logging
+from logging import Logger
 import os
 import tqdm
 
 
 class SelfRectificationPipeline:
     def __init__(self, pipeline: StableDiffusionPipeline=None):
-        self.logger = None
-        self.get_logger(self.__class__.__name__)
+        self.logger = self.get_logger(self.__class__.__name__)
         self.pipeline = None
         # self.unet: UNet2DConditionModel = pipeline.unet
         # self.scheduler: DDIMScheduler = pipeline.scheduler
@@ -34,6 +34,7 @@ class SelfRectificationPipeline:
     @staticmethod
     def from_pretrained(model_path: str, **kwargs):
         for key, value in kwargs.copy().items():
+            # kwargs set to None isn't allowed to pass to from_pretrained
             if value is None:
                 kwargs.pop(key)
 
@@ -42,13 +43,35 @@ class SelfRectificationPipeline:
 
         return pipeline
 
-    def get_logger(self, logger_name: str):
-        self.logger = logging.getLogger(logger_name)
+    @staticmethod
+    def get_logger(logger_name: str) -> Logger:
+        return logging.getLogger(logger_name)
 
-        return
+    def add_noise(self,
+                  sample: torch.Tensor,
+                  timestep,
+                  encoder_hidden_states: torch.Tensor):
+        noise_pred = self.unet(sample, timestep, encoder_hidden_states)
+        # latents_start =
 
-    def invert(self):
-        pass
+    @torch.no_grad()
+    def invert(self, latents, num_inference_steps=None, use_clamp=False):
+        """
+        add noise
+        :param latents: latents without noise
+        :param num_inference_steps: steps to take
+        :param use_clamp: whether clamp the noised image
+        :return:
+        """
+        num_inference_steps = num_inference_steps if num_inference_steps \
+                                                     is not None else self.scheduler.num_inference_steps
+        noised_latents = latents
+        for i in range(num_inference_steps):
+            noised_latents += torch.randn_like(latents)
+
+        if use_clamp:
+            noised_latents = torch.clamp(noised_latents, -1., 1.)
+        return noised_latents
 
     def denoising_process(self,
                           image: torch.Tensor,
@@ -69,9 +92,6 @@ class SelfRectificationPipeline:
             x_states.append(x_t)
 
         return x_t, x_states
-
-    def noising_process(self):
-        pass
 
     def structure_preserve_invert(self,
                                   inversion_ref: torch.Tensor,
