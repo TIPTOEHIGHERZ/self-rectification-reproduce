@@ -31,11 +31,16 @@ class SelfRectificationPipeline:
 
         return
 
-    def from_pretrained(self, model_path: str):
-        self.pipeline = DiffusionPipeline.from_pretrained(model_path)
-        self.init(self.pipeline)
+    @staticmethod
+    def from_pretrained(model_path: str, **kwargs):
+        for key, value in kwargs.copy().items():
+            if value is None:
+                kwargs.pop(key)
 
-        return
+        pipeline = DiffusionPipeline.from_pretrained(model_path)
+        pipeline = SelfRectificationPipeline(pipeline)
+
+        return pipeline
 
     def get_logger(self, logger_name: str):
         self.logger = logging.getLogger(logger_name)
@@ -65,15 +70,17 @@ class SelfRectificationPipeline:
 
         return x_t, x_states
 
+    def noising_process(self):
+        pass
+
     def structure_preserve_invert(self,
                                   inversion_ref: torch.Tensor,
                                   inversion_target: torch.Tensor,
                                   time_steps,
                                   encoder_hidden_states,
                                   eta=0.):
-        
-
-        return x_t, x_states
+        pass
+        return
 
     def predict_x_prev(self, x_t: torch.Tensor, t, noise_pred: torch.Tensor, eta=0.):
         batch_size = noise_pred.shape[0]
