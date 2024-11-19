@@ -13,6 +13,6 @@ pipe: SelfRectificationPipeline = SelfRectificationPipeline.from_pretrained(mode
 counts = KVSaver.register_kv_saver(pipe)
 
 # todo test whether still functional
-image: Image.Image = pipe.pipeline(prompt='a horse standing in mud', height=512, width=512)
+image: Image.Image = pipe.pipeline(prompt='a horse standing in mud', height=512, width=512, num_inference_steps=50).images[0]
 image.show()
 image.save('./result.jpg')
