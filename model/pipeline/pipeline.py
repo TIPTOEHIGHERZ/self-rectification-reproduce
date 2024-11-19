@@ -72,12 +72,13 @@ class SelfRectificationPipeline:
 
     @torch.no_grad()
     def invert(self,
-               sample: torch.Tensor,
+               image: torch.Tensor,
                prompt='',
-               use_clamp=False,
-               verbose=False,
-               desc=''):
-        batch_size = sample.shape[0]
+               verbose=True,
+               desc='DDIM Inverting'):
+        batch_size = image.shape[0]
+        device = image.device
+
         if isinstance(prompt, str):
             prompt = [prompt] * batch_size
         elif len(prompt) == 1:
@@ -86,9 +87,9 @@ class SelfRectificationPipeline:
             raise ValueError(f'Prompts should have the same number as the sample!,'
                              f'{batch_size} samples accept, but {len(prompt)} are given.')
 
+        latents = self.vae.encode(image, return_dict=False).mode()
         timesteps = reversed(self.scheduler.timesteps)
         iteration = tqdm.tqdm(timesteps, desc=desc) if verbose else timesteps
-        device = sample.device
 
         tokens = self.tokenizer(
             prompt,
@@ -98,11 +99,8 @@ class SelfRectificationPipeline:
         )
         encoder_hidden_states = self.text_encoder(tokens['input_ids'].to(device))[0]
         for timestep in iteration:
-            sample = self.add_noise(sample, timestep, encoder_hidden_states)
+            latents = self.add_noise(latents, timestep, encoder_hidden_states)
 
-        if use_clamp:
-            pass
-            # noised_latents = torch.clamp(noised_latents, -1., 1.)
         return
 
     def denoising_process(self,

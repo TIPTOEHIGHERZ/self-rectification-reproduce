@@ -1,1 +1,1 @@
-from .KVSaver import KVSaver
+from .KVSaver import register_kv_saver
