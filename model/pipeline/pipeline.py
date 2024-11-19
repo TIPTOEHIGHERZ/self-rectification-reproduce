@@ -101,7 +101,8 @@ class SelfRectificationPipeline:
             sample = self.add_noise(sample, timestep, encoder_hidden_states)
 
         if use_clamp:
-            noised_latents = torch.clamp(noised_latents, -1., 1.)
+            pass
+            # noised_latents = torch.clamp(noised_latents, -1., 1.)
         return
 
     def denoising_process(self,
