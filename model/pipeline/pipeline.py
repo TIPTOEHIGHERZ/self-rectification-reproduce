@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 from diffusers import StableDiffusionPipeline, AutoencoderKL, UNet2DConditionModel, DDIMScheduler, DiffusionPipeline
+from transformers import CLIPTextModel, CLIPTokenizer
 import logging
 from logging import Logger
 import os
@@ -17,6 +18,8 @@ class SelfRectificationPipeline:
 
         if pipeline is not None:
             self.pipeline: StableDiffusionPipeline = pipeline
+            self.text_encoder: CLIPTextModel = pipeline.text_encoder
+            self.tokenizer: CLIPTokenizer = pipeline.tokenizer
             self.unet: UNet2DConditionModel = pipeline.unet
             self.scheduler: DDIMScheduler = pipeline.scheduler
             self.vae: AutoencoderKL = pipeline.vae
@@ -51,45 +54,66 @@ class SelfRectificationPipeline:
                   sample: torch.Tensor,
                   timestep,
                   encoder_hidden_states: torch.Tensor):
+        num_train_steps, num_inference_steps = len(self.scheduler.alphas), self.scheduler.num_inference_steps
+        next_step = timestep + num_train_steps // num_inference_steps
+
         noise_pred = self.unet(sample, timestep, encoder_hidden_states)
-        # latents_start =
+        alpha = self.scheduler.alphas_cumprod
+
+        alpha_t = alpha[timestep]
+        beta_t = 1 - alpha_t
+        alpha_next = alpha[next_step]
+        beta_next = 1 - alpha_next
+
+        x_0 = (sample - beta_t.sqrt() * noise_pred) / alpha_t.sqrt()
+        x_next = alpha_next.sqrt() * x_0 + beta_next.sqrt() * noise_pred
+
+        return x_next
+        
 
     @torch.no_grad()
-    def invert(self, latents, num_inference_steps=None, use_clamp=False):
-        """
-        add noise
-        :param latents: latents without noise
-        :param num_inference_steps: steps to take
-        :param use_clamp: whether clamp the noised image
-        :return:
-        """
-        num_inference_steps = num_inference_steps if num_inference_steps \
-                                                     is not None else self.scheduler.num_inference_steps
-        noised_latents = latents
-        for i in range(num_inference_steps):
-            noised_latents += torch.randn_like(latents)
+    def invert(self,
+               sample: torch.Tensor,
+               prompt='',
+               use_clamp=False,
+               verbose=False,
+               desc=''):
+        batch_size = sample.shape[0]
+
+        timesteps = reversed(self.scheduler.timesteps)
+        iteration = tqdm.tqdm(timesteps, desc=desc) if verbose else timesteps
+        device = sample.device
+
+        for timestep in iteration:
+            tokens = self.tokenizer(
+                prompt,
+                padding="max_length",
+                max_length=77,
+                return_tensors="pt"
+            )
+            encoder_hidden_states = self.text_encoder(tokens['input_ids'].to(device))[0]
+            sample = self.add_noise(sample, timestep, encoder_hidden_states)
+
 
         if use_clamp:
             noised_latents = torch.clamp(noised_latents, -1., 1.)
-        return noised_latents
+        return
 
     def denoising_process(self,
                           image: torch.Tensor,
                           time_steps,
                           encoder_hidden_states,
-                          eta=0.,
                           desc=''):
         latents = self.vae.encode(image, return_dict=False)
 
         self.scheduler.set_timesteps(time_steps)
-        time_steps = self.scheduler.timesteps
+        time_steps = reversed(self.scheduler.timesteps)
 
         x_t = image
         x_states = [x_t]
-        for t in tqdm.trange(time_steps, desc=desc):
-            noise_pred = self.unet(latents, time_steps, encoder_hidden_states).sample
-            x_t = self.predict_x_prev(x_t, t, noise_pred, eta)
-            x_states.append(x_t)
+        iteration = tqdm.tqdm(reversed(self.scheduler.timesteps), desc=desc)
+        for t in iteration:
+            x_next = self.add_noise(x_t, t, encoder_hidden_states)
 
         return x_t, x_states
 
