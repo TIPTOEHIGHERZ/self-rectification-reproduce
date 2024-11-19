@@ -1,3 +1,5 @@
 pretrained
 .idea
 __pycache__
+*.jpg
+*.png
