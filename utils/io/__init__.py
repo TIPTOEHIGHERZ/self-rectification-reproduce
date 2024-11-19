@@ -1,6 +1,7 @@
 from PIL import Image
 import numpy as np
 import torch
+import torchvision
 import os
 from typing import Union, Iterable
 
@@ -16,10 +17,11 @@ def to_numpy(obj: Union[torch.Tensor, np.ndarray]):
         raise NotImplementedError('unknown instance to convert')
 
 
-def load_image(path: str):
+def load_image(path: str) -> torch.Tensor:
     path = os.path.join(os.getcwd(), path)
     image = Image.open(path)
     image.convert('RGB')
+    image = torchvision.transforms.ToTensor()(image)
 
     return image
 
