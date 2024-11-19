@@ -13,7 +13,7 @@ scheduler = DDIMScheduler(beta_start=0.00085, beta_end=0.012, beta_schedule="sca
 pipe: SelfRectificationPipeline = SelfRectificationPipeline.from_pretrained(model_path, scheduler=scheduler)
 counts = register_kv_saver(pipe)
 
-target_image = load_image('./images/tgts/203-1.jpg')
+target_image = load_image('./images/tgts/203-1.jpg').unsqueeze(0)
 inversion_reference = target_image
 
-pipe.invert(inversion_reference, '')
+pipe.invert(inversion_reference, 10, '')

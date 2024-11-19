@@ -41,7 +41,7 @@ class SelfRectificationPipeline:
             if value is None:
                 kwargs.pop(key)
 
-        pipeline = DiffusionPipeline.from_pretrained(model_path)
+        pipeline = DiffusionPipeline.from_pretrained(model_path, **kwargs)
         pipeline = SelfRectificationPipeline(pipeline)
 
         return pipeline
@@ -55,9 +55,9 @@ class SelfRectificationPipeline:
                   timestep,
                   encoder_hidden_states: torch.Tensor):
         num_train_steps, num_inference_steps = len(self.scheduler.alphas), self.scheduler.num_inference_steps
-        next_step = timestep + num_train_steps // num_inference_steps
+        next_step = min(timestep + num_train_steps // num_inference_steps, num_train_steps - 1)
 
-        noise_pred = self.unet(sample, timestep, encoder_hidden_states)
+        noise_pred = self.unet(sample, timestep, encoder_hidden_states).sample
         alpha = self.scheduler.alphas_cumprod
 
         alpha_t = alpha[timestep]
@@ -73,12 +73,14 @@ class SelfRectificationPipeline:
     @torch.no_grad()
     def invert(self,
                image: torch.Tensor,
+               num_inference_steps,
                prompt='',
                verbose=True,
                desc='DDIM Inverting'):
         batch_size = image.shape[0]
         device = image.device
 
+        self.scheduler.set_timesteps(num_inference_steps)
         if isinstance(prompt, str):
             prompt = [prompt] * batch_size
         elif len(prompt) == 1:
@@ -87,7 +89,7 @@ class SelfRectificationPipeline:
             raise ValueError(f'Prompts should have the same number as the sample!,'
                              f'{batch_size} samples accept, but {len(prompt)} are given.')
 
-        latents = self.vae.encode(image, return_dict=False).mode()
+        latents = self.vae.encode(image, return_dict=False)[0].mode()
         timesteps = reversed(self.scheduler.timesteps)
         iteration = tqdm.tqdm(timesteps, desc=desc) if verbose else timesteps
 
