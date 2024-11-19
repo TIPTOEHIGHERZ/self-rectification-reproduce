@@ -69,7 +69,6 @@ class SelfRectificationPipeline:
         x_next = alpha_next.sqrt() * x_0 + beta_next.sqrt() * noise_pred
 
         return x_next
-        
 
     @torch.no_grad()
     def invert(self,
@@ -79,21 +78,27 @@ class SelfRectificationPipeline:
                verbose=False,
                desc=''):
         batch_size = sample.shape[0]
+        if isinstance(prompt, str):
+            prompt = [prompt] * batch_size
+        elif len(prompt) == 1:
+            prompt = prompt * batch_size
+        elif len(prompt) != batch_size:
+            raise ValueError(f'Prompts should have the same number as the sample!,'
+                             f'{batch_size} samples accept, but {len(prompt)} are given.')
 
         timesteps = reversed(self.scheduler.timesteps)
         iteration = tqdm.tqdm(timesteps, desc=desc) if verbose else timesteps
         device = sample.device
 
+        tokens = self.tokenizer(
+            prompt,
+            padding="max_length",
+            max_length=77,
+            return_tensors="pt"
+        )
+        encoder_hidden_states = self.text_encoder(tokens['input_ids'].to(device))[0]
         for timestep in iteration:
-            tokens = self.tokenizer(
-                prompt,
-                padding="max_length",
-                max_length=77,
-                return_tensors="pt"
-            )
-            encoder_hidden_states = self.text_encoder(tokens['input_ids'].to(device))[0]
             sample = self.add_noise(sample, timestep, encoder_hidden_states)
-
 
         if use_clamp:
             noised_latents = torch.clamp(noised_latents, -1., 1.)
