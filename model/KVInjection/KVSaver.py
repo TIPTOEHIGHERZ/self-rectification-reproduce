@@ -3,24 +3,44 @@ import torch.nn as nn
 from typing import Union, Optional
 from diffusers import StableDiffusionPipeline, UNet2DConditionModel
 from diffusers.models.attention_processor import Attention
+import logging
 
 
 REGISTER_BLOCK_NAMES = ['down_blocks', 'up_blocks', 'mid_block']
+access_injection_dict = dict()
 
 
 class KVInjection:
-    out = None
-    k = None
-    v = None
-
-    def __init__(self, k=None, v=None):
-        self.k = k
-        self.v = v
+    def __init__(self, num_inference_steps):
+        self.k = [None] * num_inference_steps
+        self.v = [None] * num_inference_steps
+        self.count = 0
+        self.num_inference_steps = num_inference_steps
 
         return
 
+    def append(self, k: torch.Tensor, v: torch.Tensor):
+        self.k[self.count] = k
+        self.v[self.count] = v
+        self.count += 1
 
-def register_kv_saver(model: Union[StableDiffusionPipeline, UNet2DConditionModel]):
+        if self.count == self.num_inference_steps:
+            self.count = 0
+
+        return
+
+    def pop(self):
+        k = self.k[self.count]
+        v= self.v[self.count]
+        self.count -= 1
+
+        if self.count < 0:
+            self.count = self.num_inference_steps - 1
+
+        return k, v
+
+
+def register_kv_injection(model: Union[StableDiffusionPipeline, UNet2DConditionModel], num_inference_steps: int, register_name=''):
     if isinstance(model, UNet2DConditionModel):
         unet = model
     else:
@@ -57,8 +77,7 @@ def register_kv_saver(model: Union[StableDiffusionPipeline, UNet2DConditionModel
 
             q = self.to_q(hidden_states)
             if use_injection:
-                k = self.kv_injection.k
-                v = self.kv_injection.v
+                k, v = self.kv_injection.pop()
             elif encoder_hidden_states is None:
                 # cross attention
                 k = self.to_k(hidden_states)
@@ -92,13 +111,20 @@ def register_kv_saver(model: Union[StableDiffusionPipeline, UNet2DConditionModel
             out = out / self.rescale_output_factor
 
             if save_kv:
-                self.kv_injection.k = k
-                self.kv_injection.v = v
+                self.kv_injection.append(k, v)
             return out
 
         if isinstance(attn, Attention):
             # register new forward function and kv_injection
-            attn.kv_injection = KVInjection()
+            # todo through global variable to be access from outside?
+            # if register_name in access_injection_dict.copy().keys():
+            #     i = 0
+            #     while True:
+            #         if f'{register_name}_{i}' not in access_injection_dict.keys():
+            #
+            #
+            #     logging.warning(f'{register_name} is already registered, will be register to {register_name + }')
+            attn.kv_injection = KVInjection(num_inference_steps)
             attn.forward = forward
             # Attention's child can't have attention, just return
             return count + 1
@@ -119,3 +145,14 @@ def register_kv_saver(model: Union[StableDiffusionPipeline, UNet2DConditionModel
         return counts
 
     return register_blocks(unet)
+
+
+def reset_inference_steps(attn: nn.Module, count=0):
+    for name, child in attn.named_children():
+        if isinstance(child, Attention) and hasattr(child, 'inference_steps'):
+            child.inference_steps = 0
+            return count + 1
+        else:
+           count = reset_inference_steps(child, count)
+
+    return count
