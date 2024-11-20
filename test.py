@@ -14,10 +14,14 @@ scheduler = DDIMScheduler(beta_start=0.00085, beta_end=0.012, beta_schedule="sca
                           set_alpha_to_one=False)
 pipe: SelfRectificationPipeline = SelfRectificationPipeline.from_pretrained(model_path, scheduler=scheduler)
 
+
 # generate function test
 image = torch.rand([1, 3, 512, 512])
-image = pipe.sampling(image, 50, 'a horse stand in mud')
+image = pipe.sampling(image, 50, '')
 save_image(image, 'result.jpg')
+# image = pipe.pipeline('', 512, 512, num_inference_steps=50).images
+# save_image(image[0], 'result.jpg')
+
 
 # counts = register_kv_injection(pipe, num_inference_steps)
 # print(counts)
