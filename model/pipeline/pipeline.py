@@ -53,11 +53,12 @@ class SelfRectificationPipeline:
     def add_noise(self,
                   sample: torch.Tensor,
                   timestep,
-                  encoder_hidden_states: torch.Tensor):
+                  encoder_hidden_states: torch.Tensor,
+                  cross_attention_kwargs):
         num_train_steps, num_inference_steps = len(self.scheduler.alphas), self.scheduler.num_inference_steps
         next_step = min(timestep + num_train_steps // num_inference_steps, num_train_steps - 1)
 
-        noise_pred = self.unet(sample, timestep, encoder_hidden_states).sample
+        noise_pred = self.unet(sample, timestep, encoder_hidden_states, cross_attention_kwargs=cross_attention_kwargs).sample
         alpha = self.scheduler.alphas_cumprod
 
         alpha_t = alpha[timestep]
@@ -76,7 +77,8 @@ class SelfRectificationPipeline:
                num_inference_steps,
                prompt='',
                verbose=True,
-               desc='DDIM Inverting'):
+               desc='DDIM Inverting',
+               **cross_attention_kwargs):
         batch_size = image.shape[0]
         device = image.device
 
@@ -101,35 +103,8 @@ class SelfRectificationPipeline:
         )
         encoder_hidden_states = self.text_encoder(tokens['input_ids'].to(device))[0]
         for timestep in iteration:
-            latents = self.add_noise(latents, timestep, encoder_hidden_states)
+            latents = self.add_noise(latents, timestep, encoder_hidden_states, cross_attention_kwargs)
 
-        return
-
-    def denoising_process(self,
-                          image: torch.Tensor,
-                          time_steps,
-                          encoder_hidden_states,
-                          desc=''):
-        latents = self.vae.encode(image, return_dict=False)
-
-        self.scheduler.set_timesteps(time_steps)
-        time_steps = reversed(self.scheduler.timesteps)
-
-        x_t = image
-        x_states = [x_t]
-        iteration = tqdm.tqdm(reversed(self.scheduler.timesteps), desc=desc)
-        for t in iteration:
-            x_next = self.add_noise(x_t, t, encoder_hidden_states)
-
-        return x_t, x_states
-
-    def structure_preserve_invert(self,
-                                  inversion_ref: torch.Tensor,
-                                  inversion_target: torch.Tensor,
-                                  time_steps,
-                                  encoder_hidden_states,
-                                  eta=0.):
-        pass
         return
 
     def predict_x_prev(self, x_t: torch.Tensor, t, noise_pred: torch.Tensor, eta=0.):

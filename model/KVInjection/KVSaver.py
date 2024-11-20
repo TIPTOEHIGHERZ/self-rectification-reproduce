@@ -29,12 +29,12 @@ class KVInjection:
         return
 
     def pop(self):
-        k = self.k[self.count]
-        v= self.v[self.count]
-        self.count -= 1
+        k = self.k[-self.count - 1]
+        v= self.v[-self.count - 1]
+        self.count += 1
 
-        if self.count < 0:
-            self.count = self.num_inference_steps - 1
+        if self.count == self.num_inference_steps:
+            self.count = 0
 
         return k, v
 
@@ -89,6 +89,8 @@ def register_kv_injection(model: Union[StableDiffusionPipeline, UNet2DConditionM
                 k = self.to_k(encoder_hidden_states)
                 v = self.to_v(encoder_hidden_states)
 
+            if save_kv:
+                self.kv_injection.append(k, v)
             attention_mask = self.prepare_attention_mask(attention_mask, c // self.heads, b * self.heads)
 
             # todo check if is right
@@ -113,8 +115,6 @@ def register_kv_injection(model: Union[StableDiffusionPipeline, UNet2DConditionM
 
             out = out / self.rescale_output_factor
 
-            if save_kv:
-                self.kv_injection.append(k, v)
             return out
 
         # register new forward function and kv_injection
