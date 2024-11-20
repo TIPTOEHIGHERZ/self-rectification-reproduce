@@ -7,7 +7,6 @@ import logging
 
 
 REGISTER_BLOCK_NAMES = ['down_blocks', 'up_blocks', 'mid_block']
-access_injection_dict = dict()
 
 
 class KVInjection:
@@ -46,7 +45,11 @@ def register_kv_injection(model: Union[StableDiffusionPipeline, UNet2DConditionM
     else:
         unet = model.unet
 
-    def register_forward(attn: nn.Module, count=0):
+    # dict to save register information
+    register_dict = dict()
+    count = 0
+
+    def register_forward(attn: Attention, count=0):
         def forward(hidden_states: torch.Tensor,
                     encoder_hidden_states: Optional[torch.Tensor] = None,
                     attention_mask: Optional[torch.Tensor] = None,
@@ -114,37 +117,20 @@ def register_kv_injection(model: Union[StableDiffusionPipeline, UNet2DConditionM
                 self.kv_injection.append(k, v)
             return out
 
-        if isinstance(attn, Attention):
-            # register new forward function and kv_injection
-            # todo through global variable to be access from outside?
-            # if register_name in access_injection_dict.copy().keys():
-            #     i = 0
-            #     while True:
-            #         if f'{register_name}_{i}' not in access_injection_dict.keys():
-            #
-            #
-            #     logging.warning(f'{register_name} is already registered, will be register to {register_name + }')
-            attn.kv_injection = KVInjection(num_inference_steps)
-            attn.forward = forward
-            # Attention's child can't have attention, just return
-            return count + 1
+        # register new forward function and kv_injection
+        # todo through global variable to be access from outside?
+        attn.kv_injection = KVInjection(num_inference_steps)
+        attn.forward = forward
+        # Attention's child can't have attention, just return
+        return count + 1
 
-        for name, children in attn.named_children():
-            count = register_forward(children, count)
+    for name, module in unet.named_modules():
+        if isinstance(module, Attention):
+            count = register_forward(module, count)
+            register_dict[f'{register_name}.{name}'] = module
 
-        return count
-
-    def register_blocks(module: nn.Module) -> dict:
-        counts = dict()
-        for name, children in module.named_children():
-            if name not in REGISTER_BLOCK_NAMES:
-                continue
-
-            counts[name] = register_forward(children)
-
-        return counts
-
-    return register_blocks(unet)
+    unet.register_dict = register_dict
+    return count
 
 
 def reset_inference_steps(attn: nn.Module, count=0):
