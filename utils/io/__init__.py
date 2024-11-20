@@ -26,6 +26,7 @@ def load_image(path: str) -> torch.Tensor:
     return image
 
 
+# todo too duplicate, need to rewrite
 def save_image(obj: Union[torch.Tensor, Image.Image, np.ndarray, list], fp: str):
     fp = os.path.join(os.getcwd(), fp)
 
@@ -42,8 +43,16 @@ def save_image(obj: Union[torch.Tensor, Image.Image, np.ndarray, list], fp: str)
         obj.save(fp)
         return
 
-    os.makedirs(fp, exist_ok=True)
-    for i in range(len(obj)):
-        image = Image.fromarray(obj[i], mode='RGB')
-        image.save(os.path.join(fp, f'image_{i}.jpg'))
-    return
+    if obj.shape[0] == 1:
+        if os.path.exists(fp) and os.path.isdir(fp):
+            raise ValueError('fp is not a file path')
+        os.makedirs(os.path.dirname(fp), exist_ok=True)
+        image = Image.fromarray(obj[0], mode='RGB')
+        image.save(fp)
+        return
+    else:
+        os.makedirs(fp, exist_ok=True)
+        for i in range(len(obj)):
+            image = Image.fromarray(obj[i], mode='RGB')
+            image.save(os.path.join(fp, f'image_{i}.jpg'))
+        return
