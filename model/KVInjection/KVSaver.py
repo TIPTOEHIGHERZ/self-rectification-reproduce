@@ -129,6 +129,7 @@ def register_kv_injection(model: Union[StableDiffusionPipeline, UNet2DConditionM
             count = register_forward(module, count)
             register_dict[f'{register_name}.{name}'] = module
 
+    # access from the outside
     unet.register_dict = register_dict
     return count
 
