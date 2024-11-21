@@ -11,7 +11,7 @@ if os.path.exists(fp):
 
 
 WORLD_SIZE = 0
-device = 'cpu'
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
 if config is not None:
     # multi gpu enable
     device_ids = config.get('ids', None)
@@ -24,4 +24,3 @@ if config is not None:
         os.environ['CUDA_VISIBLE_DEVICES'] = ','.join(device_ids)
         os.environ['TORCH_DISTRIBUTED_DEBUG'] = 'INFO'
         WORLD_SIZE = torch.cuda.device_count()
-        device = 'cuda'

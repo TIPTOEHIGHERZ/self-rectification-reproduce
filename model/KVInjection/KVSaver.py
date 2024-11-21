@@ -38,6 +38,9 @@ class KVInjection:
 
         return k, v
 
+    def __len__(self):
+        return len(self.k)
+
 
 def register_kv_injection(model: Union[StableDiffusionPipeline, UNet2DConditionModel], num_inference_steps: int, register_name=''):
     if isinstance(model, UNet2DConditionModel):

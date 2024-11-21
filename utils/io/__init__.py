@@ -5,6 +5,8 @@ import torchvision
 import os
 from typing import Union, Iterable
 
+from sympy import pprint
+
 
 def to_numpy(obj: Union[torch.Tensor, np.ndarray]):
     if isinstance(obj, torch.Tensor):
@@ -24,13 +26,22 @@ def to_numpy(obj: Union[torch.Tensor, np.ndarray]):
     return obj.astype(np.uint8)
 
 
-def load_image(path: str) -> torch.Tensor:
-    path = os.path.join(os.getcwd(), path)
-    image = Image.open(path)
-    image.convert('RGB')
-    image = torchvision.transforms.ToTensor()(image)
+def load_image(path: Union[str, list[str]], to_batch=False, device='cpu') -> torch.Tensor:
+    to_tensor = torchvision.transforms.ToTensor()
 
-    return image
+    if isinstance(path, str):
+        path = os.path.join(os.getcwd(), path)
+        image = Image.open(path)
+        image.convert('RGB')
+        image = to_tensor(image)
+    else:
+        image = [to_tensor(Image.open(os.path.join(os.getcwd(), p)).convert('RGB')).unsqueeze(0) for p in path]
+        image = torch.concat(image)
+
+    if isinstance(path, str) and to_batch:
+        image.unsqueeze_(0)
+
+    return image.to(device)
 
 
 # todo too duplicate, need to rewrite

@@ -5,6 +5,8 @@ from transformers import CLIPTextModel, CLIPTokenizer
 import logging
 from logging import Logger
 import os
+from diffusers.models.attention_processor import Attention
+from model.KVInjection import KVInjection
 import tqdm
 
 
@@ -61,7 +63,23 @@ class SelfRectificationPipeline:
     @staticmethod
     def get_logger(logger_name: str) -> Logger:
         return logging.getLogger(logger_name)
-    
+
+    def image2latents(self, image: torch.Tensor):
+        # normalize
+        image = image * 2 - 1
+        latents = self.vae.encode(image, return_dict=False)[0].mean
+        latents *= self.vae.config.scaling_factor
+
+        return latents
+
+    def latents2image(self, latents: torch.Tensor):
+        # denormalize
+        image = self.vae.decode(latents / self.vae.config.scaling_factor, return_dict=False)[0]
+        image = image.clamp(-1, 1)
+        image = (image + 1) / 2
+
+        return image
+
     @torch.no_grad()
     def add_noise(self,
                   sample: torch.Tensor,
@@ -103,12 +121,13 @@ class SelfRectificationPipeline:
         beta_pre = 1 - alpha_pre
         sigma_t = eta * (beta_pre / beta_t).sqrt() * (1 - alpha_t / alpha_pre).sqrt()
 
-        latens_input = torch.concat([sample] * 2)
-        encoder_hidden_states = torch.concat([encoder_hidden_states] * 2)
+        # latens_input = torch.concat([sample] * 2)
+        # encoder_hidden_states = torch.concat([encoder_hidden_states] * 2)
+        latens_input = sample
         noise_pred = self.unet(latens_input, timestep, encoder_hidden_states,
                                cross_attention_kwargs=cross_attention_kwargs, return_dict=False)[0]
-        noise_uncond, noise_cond = noise_pred.chunk(2)
-        noise_pred = noise_uncond + guidance_scale * (noise_cond - noise_uncond)
+        # noise_uncond, noise_cond = noise_pred.chunk(2)
+        # noise_pred = noise_uncond + guidance_scale * (noise_cond - noise_uncond)
         # x_pre = self.scheduler.step(noise_pred, timestep, sample).prev_sample
         x_0 = (sample - beta_t.sqrt() * noise_pred) / alpha_t.sqrt()
         x_pre = alpha_pre.sqrt() * x_0 + (beta_pre - sigma_t ** 2).sqrt() * noise_pred + \
@@ -128,10 +147,9 @@ class SelfRectificationPipeline:
         self.scheduler.set_timesteps(num_inference_steps)
         prompt = check_prompt(prompt, batch_size)
 
-        latents = self.vae.encode(image, return_dict=False)[0].mode()
+        latents = self.image2latents(image)
         timesteps = reversed(self.scheduler.timesteps)
         iteration = tqdm.tqdm(timesteps, desc=desc) if verbose else timesteps
-
         tokens = self.tokenizer(
             prompt,
             padding="max_length",
@@ -154,7 +172,6 @@ class SelfRectificationPipeline:
                  verbose=True,
                  desc='DDIM Sampling',
                  eta=0.,
-                 norm_image=True,
                  **cross_attention_kwargs):
         device = self.vae.device
         batch_size = latents.shape[0] if latents is not None else 1
@@ -178,10 +195,11 @@ class SelfRectificationPipeline:
             latents = self.remove_noise(latents, timestep, encoder_hidden_states, eta, 
                                         cross_attention_kwargs=cross_attention_kwargs)
 
-        image = self.vae.decode(latents / self.vae.config.scaling_factor).sample
-        if norm_image:
-            image = image.clamp(-1, 1)
-            image = (image + 1) / 2
+        # image = self.vae.decode(latents / self.vae.config.scaling_factor).sample
+        # image = image.clamp(-1, 1)
+        # image = (image + 1) / 2
+        image = self.latents2image(latents)
+        # image = self.latents2image(latents)
         # do_denormalize = [True] * image.shape[0]
         # image = self.pipeline.image_processor.postprocess(image, do_denormalize=do_denormalize, output_type='pt')
 
@@ -214,11 +232,9 @@ class SelfRectificationPipeline:
                                     num_inference_steps=50) -> torch.Tensor:
         inversion_reference = target_image if inversion_reference is None else inversion_reference
 
-        latents_target = self.vae.encode(target_image, return_dict=False)[0].mode()
-        latents_ref = self.vae.encode(inversion_reference, return_dict=False)[0].mode()
-        self.invert(latents_ref, num_inference_steps,
+        self.invert(inversion_reference, num_inference_steps, desc='KV preserve invert',
                     prompt='', save_kv=True, use_injection=False)
-        cond_noised_latents = self.invert(latents_target, num_inference_steps,
+        cond_noised_latents = self.invert(target_image, num_inference_steps, desc='Noised latents generate invert',
                                           prompt='', save_kv=False, use_injection=True)
 
         return cond_noised_latents
@@ -228,12 +244,13 @@ class SelfRectificationPipeline:
                               cond_noised_latents: torch.Tensor,
                               texture_reference: torch.Tensor,
                               num_inference_steps=50):
-        latents_ref = self.vae.encode(texture_reference, return_dict=False)[0].mode()
-        self.invert(latents_ref, num_inference_steps, prompt='', save_kv=True, use_injection=False)
+        self.invert(texture_reference, num_inference_steps, prompt='', desc='Sampling invert',
+                    save_kv=True, use_injection=False)
         # denoising process!
         image = self.sampling(cond_noised_latents,
                               num_inference_steps=num_inference_steps,
                               prompt='',
+                              desc='Sampling',
                               save_kv=False,
                               use_injection=True)
 
@@ -245,6 +262,15 @@ class SelfRectificationPipeline:
                  texture_reference: torch.Tensor,
                  inversion_reference: torch.Tensor = None,
                  num_inference_steps=50):
+        for _, module in self.unet.named_modules():
+            if isinstance(module, Attention):
+                if not hasattr(module, 'kv_injection'):
+                    raise AttributeError('check if KV-Injection is registered')
+                elif len(module.kv_injection) != num_inference_steps:
+                    logging.warning(f'KV-Injection register length do not match, '
+                                    f'will be change from {len(module.kv_injection)} to {num_inference_steps}')
+                    module.kv_injection = KVInjection(num_inference_steps)
+
         inversion_reference = target_image if inversion_reference is None else inversion_reference
 
         cond_noised_latents = self.structure_preserving_invert(target_image, inversion_reference, num_inference_steps)
