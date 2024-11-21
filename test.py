@@ -16,11 +16,13 @@ scheduler = DDIMScheduler(beta_start=0.00085, beta_end=0.012, beta_schedule="sca
                           set_alpha_to_one=False)
 pipe: SelfRectificationPipeline = SelfRectificationPipeline.from_pretrained(model_path, scheduler=scheduler)
 pipe.pipeline.to('cuda')
+prompt = 'a horse in mud'
 
 # generate function test
-image = torch.rand([1, 3, 512, 512], device='cuda')
-image = pipe.sampling(image, num_inference_steps, prompt='')
+image = pipe.sampling(num_inference_steps=num_inference_steps, prompt=prompt)
 save_image(image, 'result.jpg')
+image = pipe.pipeline(num_inference_steps=num_inference_steps, prompt=prompt).images
+save_image(image, 'results_1.jpg')
 # image = pipe.pipeline('', 512, 512, num_inference_steps=50).images
 # save_image(image[0], 'result.jpg')
 

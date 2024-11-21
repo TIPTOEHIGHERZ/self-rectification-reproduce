@@ -142,7 +142,7 @@ class SelfRectificationPipeline:
         for timestep in iteration:
             latents = self.add_noise(latents, timestep, encoder_hidden_states, cross_attention_kwargs)
 
-        return
+        return latents
 
     @torch.no_grad()
     def sampling(self,
@@ -154,6 +154,7 @@ class SelfRectificationPipeline:
                  verbose=True,
                  desc='DDIM Sampling',
                  eta=0.,
+                 norm_image=True,
                  **cross_attention_kwargs):
         device = self.vae.device
         batch_size = latents.shape[0] if latents is not None else 1
@@ -161,25 +162,26 @@ class SelfRectificationPipeline:
 
         self.scheduler.set_timesteps(num_inference_steps)
         # latents = self.vae.encode(image, return_dict=False)[0].mode()
-        latents = torch.randn([1, 4, 512 // self.pipeline.vae_scale_factor, 512 // self.pipeline.vae_scale_factor], device=device) \
+        latents = torch.randn([1, 4, width // self.pipeline.vae_scale_factor, height // self.pipeline.vae_scale_factor], device=device) \
         if latents is None else latents
         iteration = tqdm.tqdm(self.scheduler.timesteps, desc=desc) if verbose else self.scheduler.timesteps
 
-        # tokens = self.tokenizer(
-        #     prompt,
-        #     padding="max_length",
-        #     max_length=77,
-        #     return_tensors="pt"
-        # )
-        # encoder_hidden_states = self.text_encoder(tokens['input_ids'].to(device))[0]
-        encoder_hidden_states, _ = self.pipeline.encode_prompt(prompt, device, 1, True)
+        tokens = self.tokenizer(
+            prompt,
+            padding="max_length",
+            max_length=77,
+            return_tensors="pt"
+        )
+        encoder_hidden_states = self.text_encoder(tokens['input_ids'].to(device))[0]
+        # encoder_hidden_states, _ = self.pipeline.encode_prompt(prompt, device, 1, True)
         for timestep in iteration:
             latents = self.remove_noise(latents, timestep, encoder_hidden_states, eta, 
                                         cross_attention_kwargs=cross_attention_kwargs)
 
         image = self.vae.decode(latents / self.vae.config.scaling_factor).sample
-        image = image.clamp(-1, 1)
-        image = (image + 1) / 2
+        if norm_image:
+            image = image.clamp(-1, 1)
+            image = (image + 1) / 2
         # do_denormalize = [True] * image.shape[0]
         # image = self.pipeline.image_processor.postprocess(image, do_denormalize=do_denormalize, output_type='pt')
 
@@ -204,3 +206,48 @@ class SelfRectificationPipeline:
         x_t_prev = alpha_t_prev.sqrt() * x_start + direct_x_t + random_noise
 
         return x_t_prev
+
+    @torch.no_grad()
+    def structure_preserving_invert(self,
+                                    target_image: torch.Tensor,
+                                    inversion_reference: torch.Tensor = None,
+                                    num_inference_steps=50) -> torch.Tensor:
+        inversion_reference = target_image if inversion_reference is None else inversion_reference
+
+        latents_target = self.vae.encode(target_image, return_dict=False)[0].mode()
+        latents_ref = self.vae.encode(inversion_reference, return_dict=False)[0].mode()
+        self.invert(latents_ref, num_inference_steps,
+                    prompt='', save_kv=True, use_injection=False)
+        cond_noised_latents = self.invert(latents_target, num_inference_steps,
+                                          prompt='', save_kv=False, use_injection=True)
+
+        return cond_noised_latents
+
+    @torch.no_grad()
+    def fine_texture_sampling(self,
+                              cond_noised_latents: torch.Tensor,
+                              texture_reference: torch.Tensor,
+                              num_inference_steps=50):
+        latents_ref = self.vae.encode(texture_reference, return_dict=False)[0].mode()
+        self.invert(latents_ref, num_inference_steps, prompt='', save_kv=True, use_injection=False)
+        # denoising process!
+        image = self.sampling(cond_noised_latents,
+                              num_inference_steps=num_inference_steps,
+                              prompt='',
+                              save_kv=False,
+                              use_injection=True)
+
+        return image
+
+    @torch.no_grad()
+    def __call__(self,
+                 target_image: torch.Tensor,
+                 texture_reference: torch.Tensor,
+                 inversion_reference: torch.Tensor = None,
+                 num_inference_steps=50):
+        inversion_reference = target_image if inversion_reference is None else inversion_reference
+
+        cond_noised_latents = self.structure_preserving_invert(target_image, inversion_reference, num_inference_steps)
+        image = self.fine_texture_sampling(cond_noised_latents, texture_reference, num_inference_steps)
+
+        return image

@@ -49,8 +49,12 @@ def save_image(obj: Union[torch.Tensor, Image.Image, np.ndarray, list], fp: str,
         raise NotImplementedError(f'not support type {obj.__class__.__name__}')
 
     if len(obj) == 1:
-        Image.fromarray(obj[0], mode=save_format).save(fp)
-        return
+        if isinstance(obj[0], Image.Image):
+            obj[0].convert(save_format).save(fp)
+            return
+        else:
+            Image.fromarray(obj[0], mode=save_format).save(fp)
+            return
 
     if os.path.isfile(fp):
         raise FileExistsError(f'{fp} is a file, but have {len(obj)} images to save')
