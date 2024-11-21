@@ -1,9 +1,8 @@
 from diffusers import DiffusionPipeline, DDIMScheduler, StableDiffusionPipeline
-from transformers.models.paligemma.convert_paligemma_weights_to_hf import device
+import torch
 
 from model.pipeline import SelfRectificationPipeline
-import torch
-from model.KVInjection import register_kv_injection
+from model.KVInjection import register_kv_injection, KVInjectionAgent
 from PIL import Image
 from utils.io import load_image, save_image
 from utils.device import device
@@ -16,10 +15,9 @@ scheduler = DDIMScheduler(beta_start=0.00085, beta_end=0.012, beta_schedule="sca
                           clip_sample=False,
                           set_alpha_to_one=False)
 pipe: SelfRectificationPipeline = SelfRectificationPipeline.from_pretrained(model_path, scheduler=scheduler)
-register_kv_injection(pipe, num_inference_steps)
-for name in pipe.unet.register_dict.keys():
-    if not (name.startswith('.down') or name.startswith('.mid') or name.startswith('.up')):
-        print(name)
+_, count = register_kv_injection(pipe, KVInjectionAgent(0), num_inference_steps)
+print(count)
+exit()
 pipe.pipeline.to(device)
 print(f'running on device:{device}')
 

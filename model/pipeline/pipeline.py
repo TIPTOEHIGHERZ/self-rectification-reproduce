@@ -6,7 +6,7 @@ import logging
 from logging import Logger
 import os
 from diffusers.models.attention_processor import Attention
-from model.KVInjection import KVInjection
+from model.KVInjection import KVSaver
 import tqdm
 
 
@@ -271,7 +271,7 @@ class SelfRectificationPipeline:
                 elif len(module.kv_injection) != num_inference_steps:
                     logging.warning(f'KV-Injection register length do not match, '
                                     f'will be change from {len(module.kv_injection)} to {num_inference_steps}')
-                    module.kv_injection = KVInjection(num_inference_steps)
+                    module.kv_injection = KVSaver(num_inference_steps)
 
         inversion_reference = target_image if inversion_reference is None else inversion_reference
 

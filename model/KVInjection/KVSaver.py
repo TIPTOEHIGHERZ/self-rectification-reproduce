@@ -31,7 +31,20 @@ def batch_attention(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, heads: in
     return out
 
 
-class KVInjection:
+def attention(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, heads: int):
+    b, l, d = q.shape
+    q = q.reshape(b, l, heads, d // heads).permute(0, 2, 1, 3)
+    k = k.reshape(b, l, heads, d // heads).permute(0, 2, 1, 3)
+    v = v.reshape(b, l, heads, d // heads).permute(0, 2, 1, 3)
+
+    attn_score = torch.softmax(torch.matmul(q, k.transpose(-1, -2)) / (d // heads) ** 0.5, dim=-1)
+    out = torch.matmul(attn_score, v)
+    out = out.permute(0, 2, 1, 3).reshape(b, l, d)
+
+    return out
+
+
+class KVSaver:
     def __init__(self, num_inference_steps):
         self.k = [None] * num_inference_steps
         self.v = [None] * num_inference_steps
@@ -64,7 +77,31 @@ class KVInjection:
         return len(self.k)
 
 
-def register_kv_injection(model: Union[StableDiffusionPipeline, UNet2DConditionModel], num_inference_steps: int, register_name=''):
+class KVInjectionAgent:
+    def __init__(self, total_layer: int):
+        self.cur_layer = 0
+        self.total_layer = total_layer
+
+        return
+
+    def step(self, q, k, v, heads):
+        self.cur_layer += 1
+        return batch_attention(q, k, v, heads)
+
+    def reset(self):
+        self.cur_layer = 0
+
+    def __call__(self, q, k, v, heads, use_injection=False):
+        if use_injection:
+            return batch_attention(q, k, v, heads)
+        else:
+            return attention(q, k, v, heads)
+
+
+def register_kv_injection(model: Union[StableDiffusionPipeline, UNet2DConditionModel],
+                          kv_injection_agent: KVInjectionAgent,
+                          num_inference_steps: int,
+                          register_name=''):
     if isinstance(model, UNet2DConditionModel):
         unet = model
     else:
@@ -72,7 +109,7 @@ def register_kv_injection(model: Union[StableDiffusionPipeline, UNet2DConditionM
 
     # dict to save register information
     register_dict = dict()
-    count = 0
+    register_count = dict()
 
     def register_forward(attn: Attention, count=0):
         def forward(hidden_states: torch.Tensor,
@@ -117,21 +154,22 @@ def register_kv_injection(model: Union[StableDiffusionPipeline, UNet2DConditionM
 
             if save_kv:
                 self.kv_injection.append(k, v)
-            attention_mask = self.prepare_attention_mask(attention_mask, c // self.heads, b * self.heads)
+            # attention_mask = self.prepare_attention_mask(attention_mask, c // self.heads, b * self.heads)
 
             # todo check if is right
-            if use_injection:
-                out = batch_attention(q, k, v, self.heads)
-            else:
-                k = self.head_to_batch_dim(k)
-                q = self.head_to_batch_dim(q)
-                v = self.head_to_batch_dim(v)
-                attn_score = self.get_attention_scores(q, k, attention_mask)
-                out = torch.bmm(attn_score, v)
-                out = self.batch_to_head_dim(out)
-
-            out = self.to_out[0](out)
-            out = self.to_out[1](out)
+            # if use_injection:
+            #     out = batch_attention(q, k, v, self.heads)
+            # else:
+            #     k = self.head_to_batch_dim(k)
+            #     q = self.head_to_batch_dim(q)
+            #     v = self.head_to_batch_dim(v)
+            #     attn_score = self.get_attention_scores(q, k, attention_mask)
+            #     out = torch.bmm(attn_score, v)
+            #     out = self.batch_to_head_dim(out)
+            #
+            # out = self.to_out[0](out)
+            # out = self.to_out[1](out)
+            out = kv_injection_agent(q, k, v, self.heads, use_injection)
 
             if in_dim == 4:
                 out = out.transpose(-1, -2).reshape(b, c, h, w)
@@ -145,20 +183,28 @@ def register_kv_injection(model: Union[StableDiffusionPipeline, UNet2DConditionM
 
         # register new forward function and kv_injection
         # todo through global variable to be access from outside?
-        attn.kv_injection = KVInjection(num_inference_steps)
+        attn.kv_injection = KVSaver(num_inference_steps)
         attn.forward = forward
         # Attention's child can't have attention, just return
         return count + 1
 
-    for name, module in unet.named_modules():
-        if isinstance(module, Attention):
-            # TODO only register to attn2 not attn1
-            count = register_forward(module, count)
-            register_dict[f'{register_name}.{name}'] = module
+    def register_blocks(block: nn.Module, n: str, count=0):
+        for name, child in block.named_modules():
+            if isinstance(child, Attention):
+                # TODO only register to attn2 not attn1
+                count = register_forward(child, count)
+                register_dict[f'{register_name}.{n}.{name}'] = module
+
+        return count
+
+    for name, module in unet.named_children():
+        if name in REGISTER_BLOCK_NAMES:
+            register_count[name] = register_blocks(module, name)
 
     # access from the outside
     unet.register_dict = register_dict
-    return count
+    unet.register_count = register_count
+    return register_dict, register_count
 
 
 def reset_inference_steps(attn: nn.Module, count=0):
