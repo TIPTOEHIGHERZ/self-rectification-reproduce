@@ -23,12 +23,10 @@ for name in pipe.unet.register_dict.keys():
 pipe.pipeline.to(device)
 print(f'running on device:{device}')
 
-texture_ref = ['images/aug/203.jpg',
-               'images/aug/203-1.jpg',
-               'images/aug/203-2.jpg',
-               'images/aug/203-3.jpg']
-# texture_ref = 'images/aug/203.jpg'
-target_image = load_image('images/tgts/203-1.jpg', True, device)
+texture_ref = 'images/aug/203.jpg'
+# target_image = load_image('images/tgts/203-1.jpg', True, device)
 texture_ref = load_image(texture_ref, True, device)
-image = pipe(target_image, texture_ref, num_inference_steps=num_inference_steps)
+noised_ref = pipe.invert(texture_ref, num_inference_steps, save_kv=False, use_injection=False)
+image = pipe.sampling(noised_ref, num_inference_steps=num_inference_steps, save_kv=False, use_injection=False)
+
 save_image(image, 'result.jpg')

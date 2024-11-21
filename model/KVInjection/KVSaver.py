@@ -41,8 +41,8 @@ class KVInjection:
         return
 
     def append(self, k: torch.Tensor, v: torch.Tensor):
-        self.k[self.count] = k
-        self.v[self.count] = v
+        self.k[self.count] = k.cpu()
+        self.v[self.count] = v.cpu()
         self.count += 1
 
         if self.count == self.num_inference_steps:
@@ -51,8 +51,8 @@ class KVInjection:
         return
 
     def pop(self):
-        k = self.k[-self.count - 1]
-        v = self.v[-self.count - 1]
+        k = self.k[-self.count - 1].cuda()
+        v = self.v[-self.count - 1].cuda()
         self.count += 1
 
         if self.count == self.num_inference_steps:
