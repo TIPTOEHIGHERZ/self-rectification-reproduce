@@ -69,12 +69,14 @@ class SelfRectificationPipeline:
         image = image * 2 - 1
         latents = self.vae.encode(image, return_dict=False)[0].mean
         latents *= self.vae.config.scaling_factor
+        # latents *= 0.18215
 
         return latents
 
     def latents2image(self, latents: torch.Tensor):
         # denormalize
         image = self.vae.decode(latents / self.vae.config.scaling_factor, return_dict=False)[0]
+        # image = self.vae.decode(latents / 0.18215, return_dict=False)[0]
         image = image.clamp(-1, 1)
         image = (image + 1) / 2
 

@@ -10,7 +10,6 @@ REGISTER_BLOCK_NAMES = ['down_blocks', 'up_blocks', 'mid_block']
 
 
 def batch_attention(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, heads: int):
-    # q [b1, c, h, w] k, v [b2, c, h, w]
     # perform attention on each batch of them
     b1, l, d = q.shape
     b2 = k.shape[0]
@@ -47,7 +46,6 @@ class KVInjection:
         self.count += 1
 
         if self.count == self.num_inference_steps:
-            print('full')
             self.count = 0
 
         return
@@ -58,7 +56,6 @@ class KVInjection:
         self.count += 1
 
         if self.count == self.num_inference_steps:
-            print('clear')
             self.count = 0
 
         return k, v
