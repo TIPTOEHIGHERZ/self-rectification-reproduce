@@ -146,20 +146,23 @@ class SelfRectificationPipeline:
 
     @torch.no_grad()
     def sampling(self,
-                 image: torch.Tensor,
-                 num_inference_steps,
+                 latents: torch.Tensor=None,
+                 width=512,
+                 height=512,
+                 num_inference_steps=50,
                  prompt='',
                  verbose=True,
                  desc='DDIM Sampling',
                  eta=0.,
                  **cross_attention_kwargs):
-        device = image.device
-        batch_size = image.shape[0]
+        device = self.vae.device
+        batch_size = latents.shape[0] if latents is not None else 1
         prompt = check_prompt(prompt, batch_size)
 
         self.scheduler.set_timesteps(num_inference_steps)
-        latents = self.vae.encode(image, return_dict=False)[0].mode()
-        latents = torch.randn([1, 4, 512 // self.pipeline.vae_scale_factor, 512 // self.pipeline.vae_scale_factor], device=device)
+        # latents = self.vae.encode(image, return_dict=False)[0].mode()
+        latents = torch.randn([1, 4, 512 // self.pipeline.vae_scale_factor, 512 // self.pipeline.vae_scale_factor], device=device) \
+        if latents is None else latents
         iteration = tqdm.tqdm(self.scheduler.timesteps, desc=desc) if verbose else self.scheduler.timesteps
 
         # tokens = self.tokenizer(
