@@ -19,8 +19,8 @@ class KVInjection:
         return
 
     def append(self, k: torch.Tensor, v: torch.Tensor):
-        self.k[self.count] = k
-        self.v[self.count] = v
+        self.k[self.count] = k.mean(dim=0, keepdim=True)
+        self.v[self.count] = v.mean(dim=0, keepdim=True)
         self.count += 1
 
         if self.count == self.num_inference_steps:
@@ -30,7 +30,7 @@ class KVInjection:
 
     def pop(self):
         k = self.k[-self.count - 1]
-        v= self.v[-self.count - 1]
+        v = self.v[-self.count - 1]
         self.count += 1
 
         if self.count == self.num_inference_steps:
@@ -84,6 +84,7 @@ def register_kv_injection(model: Union[StableDiffusionPipeline, UNet2DConditionM
             q = self.to_q(hidden_states)
             if use_injection:
                 k, v = self.kv_injection.pop()
+                k, v = k.repeat(b, *[1] * (k.ndim - 1)), v.repeat(b, *[1] * (v.ndim - 1))
             elif encoder_hidden_states is None:
                 # cross attention
                 k = self.to_k(hidden_states)
