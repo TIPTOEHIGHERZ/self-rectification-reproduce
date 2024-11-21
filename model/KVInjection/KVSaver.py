@@ -9,6 +9,29 @@ import logging
 REGISTER_BLOCK_NAMES = ['down_blocks', 'up_blocks', 'mid_block']
 
 
+def batch_attention(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, heads: int):
+    # q [b1, c, h, w] k, v [b2, c, h, w]
+    # perform attention on each batch of them
+    b1, l, d = q.shape
+    b2 = k.shape[0]
+
+    q = q.reshape(b1, l, heads, d // heads)
+    k = k.reshape(b2, l, heads, d // heads)
+    v = v.reshape(b2, l, heads, d // heads)
+
+    q = q.permute(2, 1, 0, 3).reshape(heads, l * b1, d // heads)
+    k = k.permute(2, 1, 0, 3).reshape(heads, l * b2, d // heads)
+    v = v.permute(2, 1, 0, 3).reshape(heads, l * b2, d // heads)
+
+    attn_score = torch.softmax(torch.matmul(q, k.transpose(-1, -2)) / ((d // heads) ** 0.5), dim=-1)
+    out = torch.matmul(attn_score, v)
+
+    # reset dim
+    out = out.reshape(heads, l, b1, d // heads).permute(2, 1, 0, 3).reshape(b1, l, d)
+
+    return out
+
+
 class KVInjection:
     def __init__(self, num_inference_steps):
         self.k = [None] * num_inference_steps
@@ -19,11 +42,12 @@ class KVInjection:
         return
 
     def append(self, k: torch.Tensor, v: torch.Tensor):
-        self.k[self.count] = k.mean(dim=0, keepdim=True)
-        self.v[self.count] = v.mean(dim=0, keepdim=True)
+        self.k[self.count] = k
+        self.v[self.count] = v
         self.count += 1
 
         if self.count == self.num_inference_steps:
+            print('full')
             self.count = 0
 
         return
@@ -34,6 +58,7 @@ class KVInjection:
         self.count += 1
 
         if self.count == self.num_inference_steps:
+            print('clear')
             self.count = 0
 
         return k, v
@@ -62,6 +87,8 @@ def register_kv_injection(model: Union[StableDiffusionPipeline, UNet2DConditionM
             # todo find ways to pass parameters to here
             save_kv = cross_attention_kwargs.pop('save_kv', True)
             use_injection = cross_attention_kwargs.pop('use_injection', False)
+            save_kv = save_kv and encoder_hidden_states is None
+            use_injection = use_injection and encoder_hidden_states is None
 
             residual = hidden_states
             in_dim = hidden_states.ndim
@@ -76,9 +103,7 @@ def register_kv_injection(model: Union[StableDiffusionPipeline, UNet2DConditionM
             if self.group_norm is not None:
                 hidden_states = attn.group_norm(hidden_states.transpose(1, 2)).transpose(1, 2)
 
-            if encoder_hidden_states is None:
-                encoder_hidden_states = hidden_states
-            elif attn.norm_cross:
+            if encoder_hidden_states is not None and self.norm_cross:
                 encoder_hidden_states = self.norm_encoder_hidden_states(encoder_hidden_states)
 
             q = self.to_q(hidden_states)
@@ -98,16 +123,16 @@ def register_kv_injection(model: Union[StableDiffusionPipeline, UNet2DConditionM
             attention_mask = self.prepare_attention_mask(attention_mask, c // self.heads, b * self.heads)
 
             # todo check if is right
-            k = self.head_to_batch_dim(k)
-            q = self.head_to_batch_dim(q)
-            v = self.head_to_batch_dim(v)
-            # k = k.reshape(b * self.heads, c // self.heads, -1)
-            # k = k.transpose(-1, -2)
-            # q = q.reshape(b * self.heads, c // self.heads, -1)
-            # attn_matric = torch.softmax(torch.matmul(k, q) / math.sqrt(dim), dim=-1)
-            attn_score = self.get_attention_scores(q, k, attention_mask)
-            out = torch.bmm(attn_score, v)
-            out = self.batch_to_head_dim(out)
+            if use_injection:
+                out = batch_attention(q, k, v, self.heads)
+            else:
+                k = self.head_to_batch_dim(k)
+                q = self.head_to_batch_dim(q)
+                v = self.head_to_batch_dim(v)
+                attn_score = self.get_attention_scores(q, k, attention_mask)
+                out = torch.bmm(attn_score, v)
+                out = self.batch_to_head_dim(out)
+
             out = self.to_out[0](out)
             out = self.to_out[1](out)
 
@@ -130,6 +155,7 @@ def register_kv_injection(model: Union[StableDiffusionPipeline, UNet2DConditionM
 
     for name, module in unet.named_modules():
         if isinstance(module, Attention):
+            # TODO only register to attn2 not attn1
             count = register_forward(module, count)
             register_dict[f'{register_name}.{name}'] = module
 

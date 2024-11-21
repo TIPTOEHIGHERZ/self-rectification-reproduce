@@ -17,14 +17,17 @@ scheduler = DDIMScheduler(beta_start=0.00085, beta_end=0.012, beta_schedule="sca
                           set_alpha_to_one=False)
 pipe: SelfRectificationPipeline = SelfRectificationPipeline.from_pretrained(model_path, scheduler=scheduler)
 register_kv_injection(pipe, num_inference_steps)
+for name in pipe.unet.register_dict.keys():
+    if not (name.startswith('.down') or name.startswith('.mid') or name.startswith('.up')):
+        print(name)
 pipe.pipeline.to(device)
 print(f'running on device:{device}')
 
-# texture_ref = ['images/aug/203.jpg',
-#                'images/aug/203-1.jpg',
-#                'images/aug/203-2.jpg',
-#                'images/aug/203-3.jpg']
-texture_ref = 'images/aug/203.jpg'
+texture_ref = ['images/aug/203.jpg',
+               'images/aug/203-1.jpg',
+               'images/aug/203-2.jpg',
+               'images/aug/203-3.jpg']
+# texture_ref = 'images/aug/203.jpg'
 target_image = load_image('images/tgts/203-1.jpg', True, device)
 texture_ref = load_image(texture_ref, True, device)
 image = pipe(target_image, texture_ref, num_inference_steps=num_inference_steps)

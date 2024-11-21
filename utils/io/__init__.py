@@ -5,8 +5,6 @@ import torchvision
 import os
 from typing import Union, Iterable
 
-from sympy import pprint
-
 
 def to_numpy(obj: Union[torch.Tensor, np.ndarray]):
     if isinstance(obj, torch.Tensor):
