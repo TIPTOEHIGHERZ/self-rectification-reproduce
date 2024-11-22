@@ -258,6 +258,11 @@ class SelfRectificationPipeline:
 
         return image
 
+    def check_kv_empty(self):
+        for name, module in self.unet.named_modules():
+            if isinstance(module, Attention) and hasattr(module, 'save_kv'):
+                assert module.save_kv.idx == 0, f'{name}\'s save_kv is not empty'
+
     @torch.no_grad()
     def __call__(self,
                  target_image: torch.Tensor,
@@ -266,16 +271,14 @@ class SelfRectificationPipeline:
                  num_inference_steps=50):
         for _, module in self.unet.named_modules():
             if isinstance(module, Attention):
-                if not hasattr(module, 'kv_injection'):
+                if not hasattr(module, 'kv_saver'):
                     raise AttributeError('check if KV-Injection is registered')
-                elif len(module.kv_injection) != num_inference_steps:
-                    logging.warning(f'KV-Injection register length do not match, '
-                                    f'will be change from {len(module.kv_injection)} to {num_inference_steps}')
-                    module.kv_injection = KVSaver(num_inference_steps)
+        self.unet.kv_injection_agent.check_inference_steps(num_inference_steps)
 
         inversion_reference = target_image if inversion_reference is None else inversion_reference
 
         cond_noised_latents = self.structure_preserving_invert(target_image, inversion_reference, num_inference_steps)
+        self.check_kv_empty()
         image = self.fine_texture_sampling(cond_noised_latents, texture_reference, num_inference_steps)
 
         return image
