@@ -105,18 +105,18 @@ class KVInjectionAgent:
         # load and save at the same time is not allowed!
         assert not (save_kv and use_injection), 'load and save at the same time is not allowed!'
         end_layer = self.total_layer if self.activate_layer_num is None else self.start_layer + self.activate_layer_num
-        assert end_layer <= self.total_layer, f'activate layers too big, start_layer + activate_layer={end_layer} exceed total layers'
+        if end_layer > self.total_layer:
+            logging.warning(f'activate layers too big, start_layer + activate_layer={end_layer} exceed total layers'
+                            f'and was set to {self.total_layer}')
         reach_save_layer = ((self.curr_step >= self.start_step)
                             and (self.start_layer <= self.cur_layer < end_layer))
         reach_load_layer = (self.curr_step < self.num_inference_steps - self.start_step
                             and (self.start_layer <= self.cur_layer < end_layer))
         if reach_save_layer and save_kv:
             kv_saver.append(k, v)
-            # print(len(kv_saver))
 
         if reach_load_layer and use_injection:
             k, v = kv_saver.pop()
-            # print(len(kv_saver))
             out = batch_attention(q, k, v, heads)
         else:
             out = attention(q, k, v, heads)
