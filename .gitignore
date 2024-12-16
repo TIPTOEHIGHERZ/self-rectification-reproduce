@@ -3,4 +3,5 @@ pretrained
 __pycache__
 *.jpg
 *.png
+*.jpeg
 images

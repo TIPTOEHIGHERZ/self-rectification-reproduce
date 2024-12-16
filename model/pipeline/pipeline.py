@@ -5,6 +5,7 @@ from transformers import CLIPTextModel, CLIPTokenizer
 import logging
 from logging import Logger
 import os
+from typing import Union
 from diffusers.models.attention_processor import Attention
 from model.KVInjection import KVSaver
 import tqdm
@@ -23,9 +24,10 @@ def check_prompt(prompt, batch_size):
 
 
 class SelfRectificationPipeline:
-    def __init__(self, pipeline: StableDiffusionPipeline=None):
+    def __init__(self, pipeline: StableDiffusionPipeline=None, device='cpu'):
         self.logger = self.get_logger(self.__class__.__name__)
         self.pipeline = None
+        self.device = device
         # self.unet: UNet2DConditionModel = pipeline.unet
         # self.scheduler: DDIMScheduler = pipeline.scheduler
         # self.vae: AutoencoderKL = pipeline.vae
@@ -38,6 +40,11 @@ class SelfRectificationPipeline:
             self.scheduler: DDIMScheduler = pipeline.scheduler
             self.vae: AutoencoderKL = pipeline.vae
 
+        return
+
+    def to(self, device: str):
+        self.pipeline.to(device)
+        self.device = device
         return
 
     def init(self, pipeline: StableDiffusionPipeline):
@@ -64,6 +71,7 @@ class SelfRectificationPipeline:
     def get_logger(logger_name: str) -> Logger:
         return logging.getLogger(logger_name)
 
+    @torch.no_grad()
     def image2latents(self, image: torch.Tensor):
         # normalize
         image = image * 2 - 1
@@ -135,6 +143,20 @@ class SelfRectificationPipeline:
         x_pre = alpha_pre.sqrt() * x_0 + (beta_pre - sigma_t ** 2).sqrt() * noise_pred + \
                 sigma_t * torch.randn_like(sample)
         return x_pre
+    
+    @torch.no_grad()
+    def prompt2embeddings(self, prompt: Union[str, list[str]]) -> torch.Tensor:
+        if isinstance(prompt, str):
+            prompt = [prompt]
+        
+        tokens = self.tokenizer(
+            prompt,
+            padding="max_length",
+            max_length=77,
+            return_tensors="pt"
+        )
+        embeddings = self.text_encoder(tokens['input_ids'].to(self.device))[0]
+        return embeddings
 
     @torch.no_grad()
     def invert(self,
@@ -143,14 +165,20 @@ class SelfRectificationPipeline:
                prompt='',
                verbose=True,
                desc='DDIM Inverting',
+               is_latents=False,
+               interval=None,
+               save_period=None,
                **cross_attention_kwargs):
+        assert interval is None or (len(interval) == 2 and interval[1] >= interval[0])
+        if interval is None:
+            interval = [0, num_inference_steps]
+
         batch_size = image.shape[0]
         device = image.device
         self.scheduler.set_timesteps(num_inference_steps)
         prompt = check_prompt(prompt, batch_size)
-
-        latents = self.image2latents(image)
-        timesteps = reversed(self.scheduler.timesteps)
+        latents = self.image2latents(image) if not is_latents else image
+        timesteps = reversed(self.scheduler.timesteps[interval[0]: interval[1]])
         iteration = tqdm.tqdm(timesteps, desc=desc) if verbose else timesteps
         tokens = self.tokenizer(
             prompt,
@@ -159,10 +187,56 @@ class SelfRectificationPipeline:
             return_tensors="pt"
         )
         encoder_hidden_states = self.text_encoder(tokens['input_ids'].to(device))[0]
-        for timestep in iteration:
+        latents_list = list()
+        for i, timestep in enumerate(iteration):
             latents = self.add_noise(latents, timestep, encoder_hidden_states, cross_attention_kwargs)
+            if save_period and i % save_period == 0:
+                latents_list.append(latents)
+
+        if save_period:
+            return latents, latents_list
 
         return latents
+
+    def resample(self, image: torch.Tensor, num_inference_steps: int, interval, resample_times=1):
+        assert isinstance(interval[0], int)
+        # interval = [interval] * resample_times if isinstance(interval[0], int) else interval
+        latents = self.invert(image, num_inference_steps=num_inference_steps)
+        latents = self.sampling(latents, num_inference_steps=num_inference_steps, return_latents=True, interval=[0 , interval[0]])
+
+        for t in range(resample_times - 1):
+            latents = self.sampling(latents, num_inference_steps=num_inference_steps, return_latents=True, interval=interval)
+            latents = self.invert(latents, num_inference_steps=num_inference_steps, is_latents=True, interval=interval)
+        
+        return self.sampling(latents, num_inference_steps=num_inference_steps, interval=[interval[0], num_inference_steps])
+    
+    def multi_resample(self, image: torch.Tensor, num_inference_steps: int, interval, resample_times=1, use_norm=False):
+        assert isinstance(interval[0], int)
+        latents = self.invert(image, num_inference_steps=num_inference_steps)
+        latents = self.sampling(latents, num_inference_steps=num_inference_steps, return_latents=True, interval=[0 , interval[0]])
+
+        std = torch.std(latents, dim=(-1, -2, -3), keepdim=True)
+        m = torch.mean(latents, dim=(-1, -2, -3), keepdim=True)
+
+        latents_list = [latents]
+        for t in range(resample_times - 1):
+            latents = self.sampling(latents, num_inference_steps=num_inference_steps, return_latents=True, interval=interval)
+            latents = self.invert(latents, num_inference_steps=num_inference_steps, is_latents=True, interval=interval)
+            latents_list.append(latents)
+
+        latents = torch.concat(latents_list, dim=0)
+        latents = self.invert(latents, num_inference_steps=num_inference_steps, is_latents=True, interval=[0, interval[0]])
+
+        # std = torch.std(latents, dim=(-1, -2, -3), keepdim=True)
+        # m = torch.mean(latents, dim=(-1, -2, -3), keepdim=True)
+        # print(m, '\n', std)
+        std_ = torch.std(latents, dim=(-1, -2, -3), keepdim=True)
+        m_ = torch.mean(latents, dim=(-1, -2, -3), keepdim=True)
+        if use_norm:
+            # latents = (latents - m) / std
+            latents = (latents - (m_ - m)) / (std_ / std)
+        images = self.sampling(latents, num_inference_steps=num_inference_steps)
+        return images
 
     @torch.no_grad()
     def sampling(self,
@@ -174,7 +248,13 @@ class SelfRectificationPipeline:
                  verbose=True,
                  desc='DDIM Sampling',
                  eta=0.,
+                 return_latents=False,
+                 interval=None,
                  **cross_attention_kwargs):
+        assert interval is None or (len(interval) == 2 and interval[1] >= interval[0])
+        if interval is None:
+            interval = [0, num_inference_steps]
+
         device = self.vae.device
         batch_size = latents.shape[0] if latents is not None else 1
         prompt = check_prompt(prompt, batch_size)
@@ -183,7 +263,9 @@ class SelfRectificationPipeline:
         # latents = self.vae.encode(image, return_dict=False)[0].mode()
         latents = torch.randn([1, 4, width // self.pipeline.vae_scale_factor, height // self.pipeline.vae_scale_factor], device=device) \
         if latents is None else latents
-        iteration = tqdm.tqdm(self.scheduler.timesteps, desc=desc) if verbose else self.scheduler.timesteps
+
+        timesteps = self.scheduler.timesteps[interval[0]: interval[1]]
+        iteration = tqdm.tqdm(timesteps, desc=desc) if verbose else timesteps
 
         tokens = self.tokenizer(
             prompt,
@@ -200,6 +282,9 @@ class SelfRectificationPipeline:
         # image = self.vae.decode(latents / self.vae.config.scaling_factor).sample
         # image = image.clamp(-1, 1)
         # image = (image + 1) / 2
+        if return_latents:
+            return latents
+
         image = self.latents2image(latents)
         # image = self.latents2image(latents)
         # do_denormalize = [True] * image.shape[0]
