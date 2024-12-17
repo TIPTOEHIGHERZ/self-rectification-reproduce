@@ -6,6 +6,7 @@ from model.KVInjection import register_kv_injection, KVInjectionAgent
 from PIL import Image
 from utils.io import load_image, save_image
 from utils.device import device
+from utils.functionals import get_mask
 
 
 model_path = './pretrained/stable-diffusion-v1-4'
@@ -28,11 +29,10 @@ texture_ref = ['images/aug/203.jpg',
                'images/aug/203-2.jpg',
                'images/aug/203-3.jpg']
 target_image = load_image('images/tgts/203-1.jpg', True, device)
+mask = get_mask(target_image, 1e-3)
 latents = pipe.image2latents(target_image)
 image = pipe.latents2image(latents)
 image = image.detach()
-save_image(image, '1.jpg')
-exit(0)
 image_coarse = pipe(target_image, texture_ref, num_inference_steps=num_inference_steps)
 save_image(image_coarse, 'result_coarse.jpg')
 register_kv_injection(pipe,

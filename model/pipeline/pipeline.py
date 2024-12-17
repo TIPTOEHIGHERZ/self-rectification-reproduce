@@ -95,7 +95,8 @@ class SelfRectificationPipeline:
                   sample: torch.Tensor,
                   timestep,
                   encoder_hidden_states: torch.Tensor,
-                  cross_attention_kwargs):
+                  cross_attention_kwargs,
+                  return_process=False):
         num_train_steps, num_inference_steps = len(self.scheduler.alphas), self.scheduler.num_inference_steps
         next_step = min(timestep + num_train_steps // num_inference_steps, num_train_steps - 1)
 
@@ -111,6 +112,10 @@ class SelfRectificationPipeline:
         x_0 = (sample - beta_t.sqrt() * noise_pred) / alpha_t.sqrt()
         x_next = alpha_next.sqrt() * x_0 + beta_next.sqrt() * noise_pred
 
+        x_next_list = list()
+        if return_process:
+            x_next_list.append(x_next.cpu())
+
         return x_next
 
     @torch.no_grad()
@@ -120,7 +125,10 @@ class SelfRectificationPipeline:
                      encoder_hidden_states: torch.Tensor, 
                      eta=0.,
                      guidance_scale=7.5,
+                     mask=None,
+                     ground_truth: torch.Tensor = None,
                      cross_attention_kwargs=None):
+        assert mask is None
         num_train_steps, num_inference_steps = len(self.scheduler.alphas), self.scheduler.num_inference_steps
         pre_step = max(timestep - num_train_steps // num_inference_steps, 0)
 
@@ -136,6 +144,9 @@ class SelfRectificationPipeline:
         latens_input = sample
         noise_pred = self.unet(latens_input, timestep, encoder_hidden_states,
                                cross_attention_kwargs=cross_attention_kwargs, return_dict=False)[0]
+        if mask is not None:
+            # TODO random noise 存在一定问题，不能引入随机性需要找替代方案，保存invert的状态
+            ground_truth_noised = alpha_t.sqrt() * ground_truth + torch.sqrt(1 - alpha_t) * torch.rand_like(ground_truth)
         # noise_uncond, noise_cond = noise_pred.chunk(2)
         # noise_pred = noise_uncond + guidance_scale * (noise_cond - noise_uncond)
         # x_pre = self.scheduler.step(noise_pred, timestep, sample).prev_sample
