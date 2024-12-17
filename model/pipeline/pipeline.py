@@ -112,10 +112,6 @@ class SelfRectificationPipeline:
         x_0 = (sample - beta_t.sqrt() * noise_pred) / alpha_t.sqrt()
         x_next = alpha_next.sqrt() * x_0 + beta_next.sqrt() * noise_pred
 
-        x_next_list = list()
-        if return_process:
-            x_next_list.append(x_next.cpu())
-
         return x_next
 
     @torch.no_grad()
@@ -125,10 +121,8 @@ class SelfRectificationPipeline:
                      encoder_hidden_states: torch.Tensor, 
                      eta=0.,
                      guidance_scale=7.5,
-                     mask=None,
                      ground_truth: torch.Tensor = None,
                      cross_attention_kwargs=None):
-        assert mask is None
         num_train_steps, num_inference_steps = len(self.scheduler.alphas), self.scheduler.num_inference_steps
         pre_step = max(timestep - num_train_steps // num_inference_steps, 0)
 
@@ -144,9 +138,6 @@ class SelfRectificationPipeline:
         latens_input = sample
         noise_pred = self.unet(latens_input, timestep, encoder_hidden_states,
                                cross_attention_kwargs=cross_attention_kwargs, return_dict=False)[0]
-        if mask is not None:
-            # TODO random noise 存在一定问题，不能引入随机性需要找替代方案，保存invert的状态
-            ground_truth_noised = alpha_t.sqrt() * ground_truth + torch.sqrt(1 - alpha_t) * torch.rand_like(ground_truth)
         # noise_uncond, noise_cond = noise_pred.chunk(2)
         # noise_pred = noise_uncond + guidance_scale * (noise_cond - noise_uncond)
         # x_pre = self.scheduler.step(noise_pred, timestep, sample).prev_sample
@@ -202,7 +193,7 @@ class SelfRectificationPipeline:
         for i, timestep in enumerate(iteration):
             latents = self.add_noise(latents, timestep, encoder_hidden_states, cross_attention_kwargs)
             if save_period and i % save_period == 0:
-                latents_list.append(latents)
+                latents_list.append(latents.cpu())
 
         if save_period:
             return latents, latents_list
@@ -261,8 +252,12 @@ class SelfRectificationPipeline:
                  eta=0.,
                  return_latents=False,
                  interval=None,
+                 mask=None,
+                 cond_noised_latents_list: list[torch.Tensor] = None,
                  **cross_attention_kwargs):
         assert interval is None or (len(interval) == 2 and interval[1] >= interval[0])
+        assert not((mask is None) ^ (cond_noised_latents_list is None)), 'mask and list should be None or not None in the same time'
+
         if interval is None:
             interval = [0, num_inference_steps]
 
@@ -286,9 +281,12 @@ class SelfRectificationPipeline:
         )
         encoder_hidden_states = self.text_encoder(tokens['input_ids'].to(device))[0]
         # encoder_hidden_states, _ = self.pipeline.encode_prompt(prompt, device, 1, True)
-        for timestep in iteration:
-            latents = self.remove_noise(latents, timestep, encoder_hidden_states, eta, 
+        for i, timestep in enumerate(iteration):
+            latents = self.remove_noise(latents, timestep, encoder_hidden_states, eta,
                                         cross_attention_kwargs=cross_attention_kwargs)
+            if mask is not None:
+                # 用invert过程中的状态override掉采样得到的噪声，让其更加贴近给定的target
+                latents[mask] = cond_noised_latents_list[i].to(self.device)[mask]
 
         # image = self.vae.decode(latents / self.vae.config.scaling_factor).sample
         # image = image.clamp(-1, 1)
@@ -327,30 +325,35 @@ class SelfRectificationPipeline:
     def structure_preserving_invert(self,
                                     target_image: torch.Tensor,
                                     inversion_reference: torch.Tensor = None,
-                                    num_inference_steps=50) -> torch.Tensor:
+                                    num_inference_steps=50):
         inversion_reference = target_image if inversion_reference is None else inversion_reference
 
         self.invert(inversion_reference, num_inference_steps, desc='KV preserve invert',
-                    prompt='', save_kv=True, use_injection=False)
-        cond_noised_latents = self.invert(target_image, num_inference_steps, desc='Noised latents generate invert',
-                                          prompt='', save_kv=False, use_injection=True)
+                    prompt='', save_kv=True, use_injection=False, save_period=1)
+        cond_noised_latents, latents_list = self.invert(target_image, num_inference_steps,
+                                                        desc='Noised latents generate invert',
+                                                        prompt='', save_kv=False, use_injection=True, save_period=1)
 
-        return cond_noised_latents
+        return cond_noised_latents, latents_list
 
     @torch.no_grad()
     def fine_texture_sampling(self,
                               cond_noised_latents: torch.Tensor,
                               texture_reference: torch.Tensor,
-                              num_inference_steps=50):
+                              num_inference_steps=50,
+                              mask=None,
+                              cond_noised_latents_list=None):
         self.invert(texture_reference, num_inference_steps, prompt='', desc='Sampling invert',
-                    save_kv=True, use_injection=False)
+                    save_kv=True, use_injection=False, save_period=1)
         # denoising process!
         image = self.sampling(cond_noised_latents,
                               num_inference_steps=num_inference_steps,
                               prompt='',
                               desc='Sampling',
                               save_kv=False,
-                              use_injection=True)
+                              use_injection=True,
+                              mask=mask,
+                              cond_noised_latents_list=cond_noised_latents_list)
 
         return image
 
@@ -364,7 +367,8 @@ class SelfRectificationPipeline:
                  target_image: torch.Tensor,
                  texture_reference: torch.Tensor,
                  inversion_reference: torch.Tensor = None,
-                 num_inference_steps=50):
+                 num_inference_steps=50,
+                 mask=None):
         for _, module in self.unet.named_modules():
             if isinstance(module, Attention):
                 if not hasattr(module, 'kv_saver'):
@@ -373,8 +377,10 @@ class SelfRectificationPipeline:
 
         inversion_reference = target_image if inversion_reference is None else inversion_reference
 
-        cond_noised_latents = self.structure_preserving_invert(target_image, inversion_reference, num_inference_steps)
+        cond_noised_latents, cond_noised_latents_list = self.structure_preserving_invert(target_image, inversion_reference, num_inference_steps)
+
         self.check_kv_empty()
-        image = self.fine_texture_sampling(cond_noised_latents, texture_reference, num_inference_steps)
+        image = self.fine_texture_sampling(cond_noised_latents, texture_reference, num_inference_steps,
+                                           mask=mask)
 
         return image
